@@ -1,0 +1,493 @@
+<?xml version="1.0" encoding="utf-8"?>
+<model version="NetLogo 7.0.4" snapToGrid="false">
+  <code><![CDATA[extensions [ csv table ]
+
+__includes [ "map.nls" "scenario.nls" "patients.nls" "triage.nls" "beds.nls"
+             "doctors.nls" "command.nls" "messages.nls" "helpers.nls" "metrics.nls" ]
+
+breed [ patients patient ]
+breed [ doctors doctor ]
+breed [ triagers triager ]          ; the triage agent (1 or 2 nurses)
+breed [ bedmanagers bedmanager ]
+breed [ commanders commander ]      ; incident command
+breed [ nurses nurse ]              ; decorative only (second triage nurse)
+
+globals [
+  ; scenario
+  scenario arrivals-table prenote-table arrival-counts n-scenario n-arrived
+  ; state + bookkeeping
+  mci? mci-declared-at records msg-counts msg-log
+  deaths deaths-waiting deaths-treatment preventable-deaths lwbs discharged admitted transferred
+  the-triager the-bed-manager the-commander
+  waiting-patches bedq-patches desk-patches bed-patches doc-counter
+  untreated-stages pre-doctor-stages
+  ; constants (see setup-constants)
+  max-minutes arrival-check-min grace
+  det-a det-b frailty-sd in-bed-factor recovery-rate mort-centre mort-slope patience-means
+  paired-time-factor solo-error-sd paired-error-sd mci-triage-factor mci-extra-error-sd visible-critical
+  eval-times diag-times reassess-time doc-log-sd mci-doc-factor disposition-probs
+  surge-activation oncall-delay transfer-transport boarding-transfer-after ward-release-per-hour
+  check-interval window horizon prenotify-lead standdown-quiet
+  bg-per-hour bg-duration incident-start
+]
+
+turtles-own [ agent-name inbox mci-belief? ]
+
+patients-own [
+  pid arrival severity init-severity true-level source transport stage frailty patience
+  est-severity assigned-level expectant-at-triage? my-bed doomed? p-timer resume-remaining
+  t-triage-start t-triage-end t-bed t-doctor t-disp t-out disposition died-waiting?
+]
+doctors-own [ on-call? available-from current-patient doc-task remaining busy-minutes preemptions home-patch ]
+triagers-own [ station-patients station-remaining queue expected-urgent paired? ]
+bedmanagers-own [ waiting boarders transfers surge-open-at ward-free ]
+commanders-own [ prenotified last-trigger forecast ]
+patches-own [ zone bed-kind bed-id bed-order occupant bed-open? ]
+
+; =====================================================================
+;  SETUP
+; =====================================================================
+to setup
+  clear-all
+  setup-constants
+  ifelse scenario-source = "file" [ load-scenario ] [ generate-scenario ]
+  random-seed sim-seed
+  index-scenario
+  build-floor
+  create-staff
+  set mci? false
+  set mci-declared-at -1
+  set records []
+  set msg-counts table:make
+  set msg-log []
+  set n-arrived 0
+  reset-ticks
+end
+
+to setup-constants
+  set max-minutes 1440
+  set arrival-check-min 1
+  set grace 10                        ; tolerance on MTS targets when calling a wait "late"
+  ; patient deterioration while untreated: dS/dt = a * exp(b * (S - 10)) * frailty
+  set det-a 0.03
+  set det-b 0.53
+  set frailty-sd 0.3
+  set in-bed-factor 0.5               ; slower once monitored in a bed
+  set recovery-rate 0.01
+  set mort-centre 9.6                 ; mortality once treated: logistic(slope * (S - centre))
+  set mort-slope 5
+  set patience-means [300 180 120]    ; LWBS patience for true MTS 3, 4, 5 (minutes)
+  ; triage
+  set paired-time-factor 0.65
+  set solo-error-sd 0.8
+  set paired-error-sd 0.5
+  set mci-triage-factor 0.6
+  set mci-extra-error-sd 0.3
+  set visible-critical 8.5
+  ; doctors
+  set eval-times [30 25 20 12 10]     ; by assigned MTS level
+  set diag-times [45 60 75 30 20]     ; by true MTS level
+  set reassess-time 10
+  set doc-log-sd 0.35
+  set mci-doc-factor 0.8
+  set disposition-probs [[0.75 0.25] [0.6 0.1] [0.3 0.02] [0.05 0] [0 0]]   ; [admit transfer], rest discharge
+  ; hospital
+  set surge-activation 30
+  set oncall-delay 45
+  set transfer-transport 30
+  set boarding-transfer-after 60
+  set ward-release-per-hour 2
+  ; incident command
+  set check-interval 5
+  set window 30
+  set horizon 30
+  set prenotify-lead 15
+  set standdown-quiet 60
+  ; scenario generator
+  set bg-per-hour 4.5
+  set bg-duration 480
+  set incident-start 60
+  set untreated-stages ["arrival" "waiting-triage" "in-triage" "waiting-bed"]
+  set pre-doctor-stages ["arrival" "waiting-triage" "in-triage" "waiting-bed" "waiting-doctor"]
+end
+
+; ---------------------------------------------------------------- staff
+to create-staff
+  create-commanders 1 [
+    set agent-name "command" set inbox [] set mci-belief? false
+    set prenotified [] set last-trigger -1 set forecast 0
+    set shape "person" set color gray set size 1.4 setxy 1 23 set label "Incident cmd"
+    set the-commander self
+  ]
+  create-triagers 1 [
+    set agent-name "triage" set inbox [] set mci-belief? false
+    set paired? (co-triage? and co-triage-mode = "paired")
+    let n ifelse-value (co-triage? and co-triage-mode = "parallel") [2] [1]
+    set station-patients n-values n [ nobody ]
+    set station-remaining n-values n [ 0 ]
+    set queue []
+    set expected-urgent []
+    set shape "person" set color pink set size 1.2 setxy 13 13
+    set the-triager self
+  ]
+  if co-triage? [
+    create-nurses 1 [
+      set agent-name "nurse-2" set inbox [] set mci-belief? false
+      set shape "person" set color pink set size 1.2
+      ifelse co-triage-mode = "parallel" [ setxy 13 9 ] [ setxy 11 13 ]
+    ]
+  ]
+  create-bedmanagers 1 [
+    set agent-name "bed_manager" set inbox [] set mci-belief? false
+    set waiting [] set boarders [] set transfers [] set surge-open-at -1 set ward-free free-ward-beds
+    set shape "person" set color violet set size 1.4 setxy 22 23 set label "Bed mgr"
+    set the-bed-manager self
+  ]
+  set doc-counter 0
+  create-doctors n-doctors [ setup-doctor false ]
+  create-doctors oncall-doctors [ setup-doctor true ]
+end
+
+to setup-doctor [ oc ]  ; doctor procedure
+  set on-call? oc
+  set agent-name (word (ifelse-value oc ["oncall_"] ["doctor_"]) doc-counter)
+  set inbox [] set mci-belief? false
+  set available-from ifelse-value oc [1000000000] [0]
+  set current-patient nobody
+  set doc-task ""
+  set remaining 0 set busy-minutes 0 set preemptions 0
+  set shape "person" set color sky set size 1.1
+  set home-patch patch (23 + 2 * (doc-counter mod 11)) 0
+  set doc-counter doc-counter + 1
+  move-to home-patch
+  set hidden? oc
+end
+
+; =====================================================================
+;  GO
+; =====================================================================
+to go
+  if sim-finished? [ stop ]
+  inject
+  ask the-commander [ command-step ]
+  ask patients [ patient-step ]
+  ask the-triager [ triage-step ]
+  ask the-bed-manager [ bm-step ]
+  ask doctors [ doctor-step ]          ; random order every tick
+  ask patients [ set color patient-color ]
+  ask the-commander [ set color ifelse-value mci-belief? [red] [gray] ]
+  tick
+end
+
+to-report sim-finished?
+  report ticks >= max-minutes or (ticks > 0 and n-arrived = n-scenario and not any? patients)
+end
+
+; new arrivals + ambulance pre-notifications (sent 15 min ahead)
+to inject
+  foreach tget prenote-table ticks [ row ->
+    let reported level-of (max list 0 (min list 10 ((item 2 row) + random-normal 0 0.8)))
+    send-msg "ambulance_dispatch" the-commander "PRENOTIFY" (list (item 0 row) (floor (item 1 row)) reported)
+  ]
+  foreach tget arrivals-table ticks [ row ->
+    create-patients 1 [ init-patient row ]
+    set n-arrived n-arrived + 1
+    table:put arrival-counts ticks (1 + tget-num arrival-counts ticks)
+  ]
+end]]></code>
+  <widgets>
+    <view x="235" wrappingAllowedX="false" y="10" frameRate="30.0" minPycor="0" height="363" showTickCounter="true" patchSize="14.0" fontSize="10" wrappingAllowedY="false" width="634" tickCounterLabel="minutes" maxPycor="24" updateMode="1" maxPxcor="44" minPxcor="0"></view>
+    <button x="5" y="10" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="70" display="setup">setup</button>
+    <button x="80" y="10" height="40" disableUntilTicks="true" forever="true" kind="Observer" width="70" display="go">go</button>
+    <button x="155" y="10" height="40" disableUntilTicks="true" forever="false" kind="Observer" width="70" display="step">go</button>
+    <chooser x="5" y="57" height="60" variable="scenario-source" current="1" width="220" display="scenario-source">
+      <choice type="string" value="generate"></choice>
+      <choice type="string" value="file"></choice>
+    </chooser>
+    <slider x="5" step="10" y="122" max="300" width="220" display="casualties" height="50" min="0" direction="Horizontal" default="80.0" variable="casualties"></slider>
+    <slider x="5" step="1" y="177" max="100" width="220" display="scenario-seed" height="50" min="1" direction="Horizontal" default="7.0" variable="scenario-seed"></slider>
+    <input x="5" multiline="false" y="232" height="60" variable="scenario-file" type="string" width="220">scenarios/mci_080.csv</input>
+    <slider x="5" step="1" y="297" max="1000" width="220" display="sim-seed" height="50" min="1" direction="Horizontal" default="1.0" variable="sim-seed"></slider>
+    <note x="8" y="355" backgroundDark="0" fontSize="11" width="217" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Triage (the experiment variable)</note>
+    <switch x="5" y="378" height="40" on="false" variable="co-triage?" width="220" display="co-triage?"></switch>
+    <chooser x="5" y="423" height="60" variable="co-triage-mode" current="0" width="220" display="co-triage-mode">
+      <choice type="string" value="paired"></choice>
+      <choice type="string" value="parallel"></choice>
+    </chooser>
+    <slider x="5" step="0.5" y="488" max="10" width="220" display="triage-time" height="50" min="1" direction="Horizontal" default="4.0" variable="triage-time" units="min"></slider>
+    <slider x="5" step="0.1" y="543" max="10" width="220" display="expectant-threshold" height="50" min="8" direction="Horizontal" default="9.2" variable="expectant-threshold"></slider>
+    <monitor x="5" precision="0" y="604" height="60" fontSize="11" width="100" display="minute">ticks</monitor>
+    <monitor x="110" precision="0" y="604" height="60" fontSize="11" width="100" display="mode">mode-label</monitor>
+    <monitor x="215" precision="0" y="604" height="60" fontSize="11" width="100" display="in ED">count patients</monitor>
+    <monitor x="5" precision="0" y="669" height="60" fontSize="11" width="100" display="deaths">deaths</monitor>
+    <monitor x="110" precision="0" y="669" height="60" fontSize="11" width="100" display="died waiting">deaths-waiting</monitor>
+    <monitor x="215" precision="0" y="669" height="60" fontSize="11" width="100" display="preventable">preventable-deaths</monitor>
+    <monitor x="5" precision="0" y="734" height="60" fontSize="11" width="100" display="left unseen">lwbs</monitor>
+    <monitor x="110" precision="2" y="734" height="60" fontSize="11" width="100" display="red/orange late">critical-delay-rate</monitor>
+    <monitor x="215" precision="0" y="734" height="60" fontSize="11" width="100" display="p90 to triage">p90-door-to-triage</monitor>
+    <monitor x="5" precision="2" y="799" height="60" fontSize="11" width="100" display="under-triage">under-triage-rate</monitor>
+    <monitor x="110" precision="0" y="799" height="60" fontSize="11" width="100" display="messages">total-messages</monitor>
+    <monitor x="215" precision="0" y="799" height="60" fontSize="11" width="100" display="MCI at">mci-declared-at</monitor>
+    <note x="885" y="10" backgroundDark="0" fontSize="11" width="215" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Department</note>
+    <slider x="880" step="1" y="33" max="40" width="220" display="general-beds" height="50" min="4" direction="Horizontal" default="24.0" variable="general-beds"></slider>
+    <slider x="880" step="1" y="88" max="10" width="220" display="resus-beds" height="50" min="0" direction="Horizontal" default="3.0" variable="resus-beds"></slider>
+    <slider x="880" step="1" y="143" max="30" width="220" display="chairs" height="50" min="0" direction="Horizontal" default="12.0" variable="chairs"></slider>
+    <slider x="880" step="1" y="198" max="20" width="220" display="surge-beds" height="50" min="0" direction="Horizontal" default="10.0" variable="surge-beds"></slider>
+    <slider x="880" step="1" y="253" max="15" width="220" display="n-doctors" height="50" min="1" direction="Horizontal" default="4.0" variable="n-doctors"></slider>
+    <slider x="880" step="1" y="308" max="10" width="220" display="oncall-doctors" height="50" min="0" direction="Horizontal" default="3.0" variable="oncall-doctors"></slider>
+    <slider x="880" step="1" y="363" max="100" width="220" display="free-ward-beds" height="50" min="0" direction="Horizontal" default="20.0" variable="free-ward-beds"></slider>
+    <switch x="880" y="418" height="40" on="true" variable="ward-boarding?" width="220" display="ward-boarding?"></switch>
+    <note x="885" y="468" backgroundDark="0" fontSize="11" width="215" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Incident command</note>
+    <slider x="1032" step="1" y="491" max="40" width="220" display="mci-threshold" height="50" min="4" direction="Horizontal" default="12.0" variable="mci-threshold" units="arrivals/30min"></slider>
+    <switch x="1032" y="546" height="40" on="true" variable="proactive-command?" width="220" display="proactive-command?"></switch>
+    <button x="1032" y="596" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="108" display="show messages">show-messages</button>
+    <button x="1144" y="596" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="108" display="export patients">export-patients</button>
+    <button x="1032" y="641" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="220" display="export scenario">export-scenario</button>
+    <plot x="325" autoPlotX="true" yMax="10.0" autoPlotY="true" yAxis="patients" y="385" xMin="0.0" height="222" legend="true" xMax="10.0" yMin="0.0" width="230" xAxis="minutes" display="Queues">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="triage" color="-2674135" legend="true">
+        <setup></setup>
+        <update>plot n-waiting-triage</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="bed" color="-955883" legend="true">
+        <setup></setup>
+        <update>plot n-waiting-bed</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="doctor" color="-13345367" legend="true">
+        <setup></setup>
+        <update>plot n-waiting-doctor</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="boarding" color="-8630108" legend="true">
+        <setup></setup>
+        <update>plot n-boarding</update>
+      </pen>
+    </plot>
+    <plot x="560" autoPlotX="true" yMax="10.0" autoPlotY="true" yAxis="patients" y="385" xMin="0.0" height="222" legend="true" xMax="10.0" yMin="0.0" width="230" xAxis="minutes" display="Outcomes">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="deaths" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot deaths</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="died waiting" color="-7500403" legend="true">
+        <setup></setup>
+        <update>plot deaths-waiting</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="left unseen" color="-1184463" legend="true">
+        <setup></setup>
+        <update>plot lwbs</update>
+      </pen>
+    </plot>
+    <plot x="795" autoPlotX="true" yMax="10.0" autoPlotY="true" yAxis="count" y="516" xMin="0.0" height="274" legend="true" xMax="10.0" yMin="0.0" width="230" xAxis="minutes" display="Resources">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="beds used" color="-10899396" legend="true">
+        <setup></setup>
+        <update>plot n-beds-occupied</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="beds open" color="-7500403" legend="true">
+        <setup></setup>
+        <update>plot n-beds-open</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="doctors busy" color="-13345367" legend="true">
+        <setup></setup>
+        <update>plot n-doctors-busy</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="MCI mode" color="-2674135" legend="true">
+        <setup></setup>
+        <update>plot ifelse-value mci? [5] [0]</update>
+      </pen>
+    </plot>
+    <output x="325" y="795" height="130" fontSize="12" width="865"></output>
+  </widgets>
+  <info><![CDATA[## WHAT IS IT?
+
+An agent-based model of one emergency department (ED) during a mass casualty incident. It asks how many casualties the department can absorb before waiting times become dangerous, and whether **co-triage** (two triage nurses instead of one) buys the department extra room or whether the bottleneck lies elsewhere.
+
+## HOW IT WORKS
+
+One tick is one minute. Five agent types:
+
+* **Patient** - has a hidden true severity from 0 (well) to 10 (dead). Severity rises while the patient is untreated, following dS/dt = a*exp(b(S-10))*frailty, and rises half as fast once the patient is monitored in a bed. A patient dies if severity reaches 10 before a doctor arrives. Patients who feel well enough (MTS 3-5) leave without being seen once their patience runs out.
+* **Triage agent** (1 or 2 nurses) - estimates severity with noise and assigns a Manchester Triage System level. Visibly critical patients and patients the ambulance pre-notified as urgent jump the queue. In MCI mode it triages faster but less accurately. Patients above the *expectant threshold* are then moved behind everyone who can still be saved.
+* **Bed manager** - places patients by priority into resus bays, ED beds, surge beds or chairs. It opens surge beds once an MCI is declared and handles boarding (admitted patients waiting for a ward bed). In MCI mode it transfers long boarders to other hospitals. When a red or orange patient has no doctor, it sends a PREEMPT message to the doctor on the least urgent task.
+* **Doctor** - pulls the most urgent task (first evaluation or reassessment) from the bed manager, yields when pre-empted, and decides the disposition: admit, transfer or discharge.
+* **Incident command** - every 5 minutes it checks arrivals, queues, free beds and ambulance pre-notifications. It declares MCI mode *proactively* on a forecast, calls in the on-call doctors, and stands down when things are back to normal.
+
+All coordination goes through messages (ARRIVED, TRIAGED, PREEMPT, CALL_IN, MCI_DECLARED, ...), which are counted and can be listed with *show messages*.
+
+Patient stages: arrival check -> triage -> bed placement -> evaluation -> diagnostics + reassessment -> disposition (discharged / admitted / transferred / left unseen / deceased).
+
+## HOW TO USE IT
+
+1. Pick a scenario. *generate* builds one from `casualties` and `scenario-seed`; *file* reads a CSV (`patient_id, arrival_minute, severity, source, transport`).
+2. Set `co-triage?` and press **setup**, then **go**.
+3. For the breaking-point experiment use **Tools > BehaviorSpace > breaking-point-sweep**. It runs every size with and without co-triage for 30 seeds. Open the table output in Excel, or run `analyze_behaviorspace.py`.
+
+Colours: patients are white until triaged, then coloured by assigned MTS level (red, orange, yellow, green, blue); dark grey = expectant. The incident-command figure turns red in MCI mode.
+
+## THINGS TO NOTICE
+
+With co-triage the triage queue empties faster, but the queue often just moves on to "waiting for bed" and "waiting for doctor". Watch the Queues plot.
+
+## THINGS TO TRY
+
+* Change `n-doctors` or `general-beds` to see whether the bottleneck moves.
+* Turn off `proactive-command?` to see what a late MCI declaration costs.
+* Compare `paired` vs `parallel` co-triage.
+
+## CREDITS
+
+MAS course team project, University of Twente: Kralev, Alagawadi, Tsompanoglou, Mohammadiyan, Pirinski.]]></info>
+  <turtleShapes>
+    <shape name="default" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="5"></point>
+        <point x="40" y="250"></point>
+        <point x="150" y="205"></point>
+        <point x="260" y="250"></point>
+      </polygon>
+    </shape>
+    <shape name="circle" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="person" rotatable="false" editableColorIndex="0">
+      <circle x="110" y="5" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="120" y="195"></point>
+        <point x="90" y="285"></point>
+        <point x="105" y="300"></point>
+        <point x="135" y="300"></point>
+        <point x="150" y="225"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="300"></point>
+        <point x="210" y="285"></point>
+        <point x="180" y="195"></point>
+        <point x="195" y="90"></point>
+      </polygon>
+      <rectangle endX="172" startY="79" marked="true" color="-1920102913" endY="94" startX="127" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="195" y="90"></point>
+        <point x="240" y="150"></point>
+        <point x="225" y="180"></point>
+        <point x="165" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="60" y="150"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="105"></point>
+      </polygon>
+    </shape>
+    <shape name="square" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+    </shape>
+  </turtleShapes>
+  <linkShapes>
+    <shape name="default" curviness="0.0">
+      <lines>
+        <line x="-0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+        <line x="0.0" visible="true">
+          <dash value="1.0"></dash>
+          <dash value="0.0"></dash>
+        </line>
+        <line x="0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+      </lines>
+      <indicator>
+        <shape name="link direction" rotatable="true" editableColorIndex="0">
+          <line endX="90" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+          <line endX="210" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+        </shape>
+      </indicator>
+    </shape>
+  </linkShapes>
+  <previewCommands>setup repeat 75 [ go ]</previewCommands>
+  <experiments>
+    <experiment name="breaking-point-sweep" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="1440">
+      <setup>setup</setup>
+      <go>go</go>
+      <exitCondition>sim-finished?</exitCondition>
+      <metrics>
+        <metric>n-scenario</metric>
+        <metric>deaths</metric>
+        <metric>deaths-waiting</metric>
+        <metric>deaths-treatment</metric>
+        <metric>preventable-deaths</metric>
+        <metric>lwbs</metric>
+        <metric>discharged</metric>
+        <metric>admitted</metric>
+        <metric>transferred</metric>
+        <metric>unresolved</metric>
+        <metric>critical-delay-rate</metric>
+        <metric>p90-door-to-triage</metric>
+        <metric>under-triage-rate</metric>
+        <metric>median-door-to-doctor 2</metric>
+        <metric>mci-declared-at</metric>
+        <metric>total-messages</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="scenario-source">
+          <value value="&quot;generate&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="casualties">
+          <value value="0"></value>
+          <value value="10"></value>
+          <value value="20"></value>
+          <value value="30"></value>
+          <value value="40"></value>
+          <value value="50"></value>
+          <value value="60"></value>
+          <value value="80"></value>
+          <value value="100"></value>
+          <value value="125"></value>
+          <value value="150"></value>
+          <value value="200"></value>
+          <value value="250"></value>
+          <value value="300"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="co-triage?">
+          <value value="false"></value>
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <steppedValueSet variable="sim-seed" first="1" step="1" last="30"></steppedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="quick-test" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="1440">
+      <setup>setup</setup>
+      <go>go</go>
+      <exitCondition>sim-finished?</exitCondition>
+      <metrics>
+        <metric>deaths</metric>
+        <metric>deaths-waiting</metric>
+        <metric>preventable-deaths</metric>
+        <metric>lwbs</metric>
+        <metric>critical-delay-rate</metric>
+        <metric>p90-door-to-triage</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="scenario-source">
+          <value value="&quot;generate&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="casualties">
+          <value value="0"></value>
+          <value value="50"></value>
+          <value value="100"></value>
+          <value value="200"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="co-triage?">
+          <value value="false"></value>
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <steppedValueSet variable="sim-seed" first="1" step="1" last="5"></steppedValueSet>
+      </constants>
+    </experiment>
+  </experiments>
+</model>

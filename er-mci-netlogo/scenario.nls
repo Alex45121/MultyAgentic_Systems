@@ -1,0 +1,87 @@
+; =====================================================================
+;  SCENARIO GENERATION / LOADING
+; =====================================================================
+; One row per patient: [id arrival-minute severity source transport]
+; Casualties are generated in a fixed order from scenario-seed, so the
+; N-casualty scenario is exactly the first N casualties of any bigger one.
+to generate-scenario
+  let rows []
+  random-seed scenario-seed
+  let t random-exponential (60 / bg-per-hour)
+  let i 0
+  while [ t < bg-duration ] [
+    let lvl draw-level [0.03 0.12 0.35 0.42 0.08]
+    let amb? (random-float 1) < (item (lvl - 1) [0.8 0.5 0.3 0.1 0.02])
+    set rows lput (list (word "B" i) (floor t) (draw-severity lvl) "background" (ifelse-value amb? ["ambulance"] ["walk-in"])) rows
+    set i i + 1
+    set t t + random-exponential (60 / bg-per-hour)
+  ]
+  random-seed (scenario-seed + 100000)
+  set i 0
+  while [ i < casualties ] [
+    let lvl draw-level [0.15 0.15 0.2 0.42 0.08]
+    let amb? (random-float 1) < (item (lvl - 1) [0.95 0.85 0.5 0.15 0.05])
+    let sev draw-severity lvl
+    let delay 0
+    ifelse amb?
+      [ set delay 20 + random-gamma 2 (1 / (item (lvl - 1) [15 25 40 50 50])) ]
+      [ set delay 10 + random-gamma 2 (1 / 15) ]
+    set rows lput (list (word "M" i) (floor (incident-start + delay)) sev "incident" (ifelse-value amb? ["ambulance"] ["walk-in"])) rows
+    set i i + 1
+  ]
+  set scenario rows
+end
+
+to-report draw-level [ mix ]
+  let r random-float 1
+  let acc 0
+  let k 0
+  while [ k < 5 ] [
+    set acc acc + (item k mix)
+    if r < acc [ report k + 1 ]
+    set k k + 1
+  ]
+  report 5
+end
+
+to-report draw-severity [ lvl ]
+  let lo item (lvl - 1) [8 6 4 2 0.3]
+  let hi item (lvl - 1) [9.6 8 6 4 2]
+  report precision (lo + random-float (hi - lo)) 2
+end
+
+; CSV with header: patient_id, arrival_minute, severity [, source, transport]
+to load-scenario
+  let raw csv:from-file scenario-file
+  let header first raw
+  let id-i position "patient_id" header
+  let arr-i position "arrival_minute" header
+  let sev-i position "severity" header
+  let src-i position "source" header
+  let trn-i position "transport" header
+  let rows filter [ r -> length r >= 3 ] (but-first raw)
+  set scenario map [ r -> (list (item id-i r) (item arr-i r) (item sev-i r)
+                               (ifelse-value (src-i = false) ["incident"] [item src-i r])
+                               (ifelse-value (trn-i = false) ["walk-in"] [item trn-i r])) ] rows
+end
+
+to export-scenario
+  csv:to-file (word "scenario_" casualties "_seed" scenario-seed ".csv")
+    fput ["patient_id" "arrival_minute" "severity" "source" "transport"] scenario
+  output-print "scenario exported"
+end
+
+to index-scenario
+  set arrivals-table table:make
+  set prenote-table table:make
+  set arrival-counts table:make
+  foreach scenario [ row ->
+    let a floor (item 1 row)
+    table:put arrivals-table a (lput row (tget arrivals-table a))
+    if item 4 row = "ambulance" [
+      let pt max list 0 (a - prenotify-lead)
+      table:put prenote-table pt (lput row (tget prenote-table pt))
+    ]
+  ]
+  set n-scenario length scenario
+end

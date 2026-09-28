@@ -1,0 +1,87 @@
+; =====================================================================
+;  DOCTOR
+; =====================================================================
+to doctor-step
+  foreach take-inbox [ m ->
+    handle-common m
+    if first m = "CALL_IN" and on-call? and available-from > 100000 [ set available-from item 1 m ]
+    if first m = "PREEMPT" and current-patient != nobody and current-patient = item 1 m [
+      let p current-patient
+      let rem remaining
+      let tsk doc-task
+      ask p [
+        set resume-remaining rem
+        set stage ifelse-value (tsk = "evaluation") [ "waiting-doctor" ] [ "waiting-reassess" ]
+      ]
+      set current-patient nobody
+      set doc-task ""
+      set preemptions preemptions + 1
+    ]
+  ]
+  if ticks < available-from [ stop ]
+  if hidden? [ show-turtle ]
+  if doc-task != "" and current-patient = nobody [ set doc-task "" ]
+  if current-patient != nobody [
+    set busy-minutes busy-minutes + 1
+    set remaining remaining - 1
+    if remaining <= 0 [ complete-task ]
+  ]
+  if current-patient = nobody [
+    count-msg "REQUEST_WORK"
+    let p [next-task] of the-bed-manager
+    ifelse p != nobody [ start-task p ] [ move-to home-patch ]
+  ]
+end
+
+to start-task [ p ]
+  set current-patient p
+  ifelse [resume-remaining] of p >= 0 [
+    ; resume an interrupted task
+    set doc-task ifelse-value ([stage] of p = "waiting-doctor") [ "evaluation" ] [ "reassessment" ]
+    set remaining [resume-remaining] of p
+    let tsk doc-task
+    ask p [ set stage tsk set resume-remaining -1 ]
+  ] [
+    ifelse [stage] of p = "waiting-doctor" [
+      set doc-task "evaluation"
+      let p-death 1 / (1 + exp (0 - mort-slope * ([severity] of p - mort-centre)))
+      ask p [ set stage "evaluation" set t-doctor ticks set doomed? (random-float 1 < p-death) ]
+      set remaining doc-time (item (([assigned-level] of p) - 1) eval-times)
+    ] [
+      set doc-task "reassessment"
+      ask p [ set stage "reassessment" ]
+      set remaining doc-time reassess-time
+    ]
+  ]
+  move-to [my-bed] of p
+  set xcor xcor + 0.4
+end
+
+to complete-task
+  let p current-patient
+  let tsk doc-task
+  set current-patient nobody
+  set doc-task ""
+  if tsk = "evaluation" [
+    ifelse [doomed?] of p [
+      ask p [ finish-patient "deceased" "doctor" ]
+    ] [
+      let d doc-time (item (([true-level] of p) - 1) diag-times)
+      ask p [ set stage "diagnostics" set p-timer d ]
+    ]
+    stop
+  ]
+  ; reassessment: decide disposition and tell the bed manager
+  let probs item (([true-level] of p) - 1) disposition-probs
+  let r random-float 1
+  let outcome "discharged"
+  if r < (item 0 probs) + (item 1 probs) [ set outcome "transferred" ]
+  if r < item 0 probs [ set outcome "admitted" ]
+  send-msg agent-name the-bed-manager "DISPOSITION" (list p outcome)
+end
+
+to-report doc-time [ mean-time ]
+  let mm mean-time
+  if mci-belief? [ set mm mm * mci-doc-factor ]
+  report max list 1 (lognormal mm doc-log-sd)
+end

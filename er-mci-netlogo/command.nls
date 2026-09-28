@@ -1,0 +1,57 @@
+; =====================================================================
+;  INCIDENT COMMAND
+; =====================================================================
+to command-step
+  foreach take-inbox [ m ->
+    if first m = "PRENOTIFY" [
+      let info item 1 m                     ; [pid eta level]
+      set prenotified lput (list (item 1 info) (item 2 info)) prenotified
+      if item 2 info <= 2 [ send-msg agent-name the-triager "EXPECT_URGENT" (item 0 info) ]
+    ]
+  ]
+  set prenotified filter [ x -> first x > ticks ] prenotified
+  if (ticks mod check-interval) != 0 [ stop ]
+  let arrivals arrivals-between (ticks - window) ticks
+  let incoming length filter [ x -> first x <= ticks + horizon ] prenotified
+  let waiting-n (length [queue] of the-triager) + (length [waiting] of the-bed-manager)
+  let free-n count bed-patches with [ bed-open? and occupant = nobody ]
+  set forecast arrivals * horizon / window + incoming
+  let reason ""
+  if arrivals >= mci-threshold [
+    set reason (word arrivals " arrivals in last " window " min") ]
+  if reason = "" and proactive-command? and forecast >= mci-threshold [
+    set reason (word "forecast " round forecast " arrivals in next " horizon " min (" incoming " pre-notified)") ]
+  if reason = "" and proactive-command? and forecast >= mci-threshold / 2 and forecast + waiting-n > free-n [
+    set reason (word "forecast demand " round (forecast + waiting-n) " exceeds " free-n " free places") ]
+  ifelse reason != "" [
+    set last-trigger ticks
+    if not mci-belief? [
+      set mci-belief? true
+      set mci? true
+      if mci-declared-at < 0 [ set mci-declared-at ticks ]
+      log-event (word "Incident command DECLARES MCI: " reason)
+      broadcast agent-name "MCI_DECLARED" reason
+      foreach sort doctors with [ on-call? and available-from > 100000 ] [ d ->
+        send-msg agent-name d "CALL_IN" (ticks + oncall-delay)
+      ]
+    ]
+  ] [
+    if mci-belief? and waiting-n = 0 and incoming = 0 and arrivals < mci-threshold / 4
+       and ticks - last-trigger >= standdown-quiet [
+      set mci-belief? false
+      set mci? false
+      log-event "Incident command STANDS DOWN: queues cleared, arrivals back to normal"
+      broadcast agent-name "STAND_DOWN" 0
+    ]
+  ]
+end
+
+to-report arrivals-between [ t0 t1 ]
+  let s 0
+  let t max list 0 (t0 + 1)
+  while [ t <= t1 ] [
+    set s s + tget-num arrival-counts t
+    set t t + 1
+  ]
+  report s
+end

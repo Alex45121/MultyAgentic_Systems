@@ -1,0 +1,63 @@
+; =====================================================================
+;  TRIAGE AGENT
+; =====================================================================
+to triage-step
+  foreach take-inbox [ m ->
+    handle-common m
+    if first m = "ARRIVED" [ set queue lput (item 1 m) queue ]
+    if first m = "EXPECT_URGENT" [ set expected-urgent lput (item 1 m) expected-urgent ]
+  ]
+  set queue filter [ p -> p != nobody ] queue
+  let i 0
+  while [ i < length station-patients ] [
+    let p item i station-patients
+    if p != nobody [
+      set station-remaining replace-item i station-remaining ((item i station-remaining) - 1)
+      if (item i station-remaining) <= 0 [
+        complete-triage p
+        set station-patients replace-item i station-patients nobody
+        set p nobody
+      ]
+    ]
+    if p = nobody and not empty? queue [
+      let nxt next-triage-patient
+      let desk item i desk-patches
+      ask nxt [ set stage "in-triage" set t-triage-start ticks move-to desk ]
+      set station-patients replace-item i station-patients nxt
+      set station-remaining replace-item i station-remaining triage-duration
+    ]
+    set i i + 1
+  ]
+end
+
+; obviously critical patients and ambulance patients announced as urgent jump the queue
+to-report next-triage-patient
+  let eu expected-urgent
+  let crit filter [ p -> [severity] of p >= visible-critical or member? ([pid] of p) eu ] queue
+  let pick first queue
+  if not empty? crit [ set pick first crit ]
+  set queue remove pick queue
+  report pick
+end
+
+to-report triage-duration
+  let m triage-time
+  if paired? [ set m m * paired-time-factor ]
+  if mci-belief? [ set m m * mci-triage-factor ]
+  report max list 0.5 (lognormal m 0.35)
+end
+
+to complete-triage [ p ]
+  let sd ifelse-value paired? [ paired-error-sd ] [ solo-error-sd ]
+  if mci-belief? [ set sd sd + mci-extra-error-sd ]
+  let tri-mci mci-belief?
+  ask p [
+    set est-severity max list 0 (min list 10 (severity + random-normal 0 sd))
+    set assigned-level level-of est-severity
+    set expectant-at-triage? (tri-mci and est-severity >= expectant-threshold)
+    set t-triage-end ticks
+    set stage "waiting-bed"
+    move-to one-of bedq-patches
+  ]
+  send-msg agent-name the-bed-manager "TRIAGED" p
+end

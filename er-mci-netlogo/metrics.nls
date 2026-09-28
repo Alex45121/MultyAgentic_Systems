@@ -1,0 +1,59 @@
+; =====================================================================
+;  OUTPUT METRICS (monitors, plots, BehaviorSpace)
+; =====================================================================
+to-report n-waiting-triage report count patients with [ stage = "arrival" or stage = "waiting-triage" or stage = "in-triage" ] end
+to-report n-waiting-bed report count patients with [ stage = "waiting-bed" ] end
+to-report n-waiting-doctor report count patients with [ stage = "waiting-doctor" ] end
+to-report n-in-treatment report count patients with [ member? stage ["evaluation" "diagnostics" "waiting-reassess" "reassessment"] ] end
+to-report n-boarding report count patients with [ stage = "boarding" or stage = "awaiting-transfer" ] end
+to-report n-beds-occupied report count bed-patches with [ occupant != nobody ] end
+to-report n-beds-open report count bed-patches with [ bed-open? ] end
+to-report n-doctors-busy report count doctors with [ current-patient != nobody ] end
+to-report n-doctors-active report count doctors with [ ticks >= available-from ] end
+to-report total-messages report sum table:values msg-counts end
+to-report n-incident report length filter [ r -> item 3 r = "incident" ] scenario end
+to-report unresolved report count patients end
+to-report mode-label report ifelse-value mci? ["MCI"] ["normal"] end
+
+to-report late-record? [ r ]
+  report (item 11 r) < 0 or ((item 11 r) - (item 3 r)) > ((mts-target (item 5 r)) + grace)
+end
+
+; share of true red/orange patients not seen by a doctor within MTS target + grace
+to-report critical-delay-rate
+  let crit filter [ r -> (item 5 r) <= 2 ] records
+  let late-n length filter [ r -> late-record? r ] crit
+  let alive patients with [ true-level <= 2 ]
+  let late-alive count alive with [ t-doctor < 0 or (t-doctor - arrival) > ((mts-target true-level) + grace) ]
+  let n (length crit) + (count alive)
+  if n = 0 [ report 0 ]
+  report (late-n + late-alive) / n
+end
+
+to-report p90-door-to-triage
+  let xs map [ r -> (item 8 r) - (item 3 r) ] filter [ r -> (item 8 r) >= 0 ] records
+  set xs sentence xs ([ t-triage-start - arrival ] of patients with [ t-triage-start >= 0 ])
+  report percentile xs 90
+end
+
+to-report under-triage-rate
+  let tri filter [ r -> (item 7 r) > 0 ] records
+  let n (length tri) + (count patients with [ assigned-level > 0 ])
+  if n = 0 [ report 0 ]
+  report ((length filter [ r -> (item 7 r) > (item 5 r) ] tri) + (count patients with [ assigned-level > true-level ])) / n
+end
+
+to-report median-door-to-doctor [ lvl ]
+  let xs map [ r -> (item 11 r) - (item 3 r) ] filter [ r -> (item 5 r) = lvl and (item 11 r) >= 0 ] records
+  set xs sentence xs ([ t-doctor - arrival ] of patients with [ true-level = lvl and t-doctor >= 0 ])
+  if empty? xs [ report -1 ]
+  report median xs
+end
+
+to export-patients
+  let rows sentence records ([ patient-record ] of patients)
+  csv:to-file (word "patients_" casualties "_" (ifelse-value co-triage? ["co"] ["single"]) "_seed" sim-seed ".csv")
+    fput ["patient_id" "source" "transport" "arrival" "initial_severity" "true_level" "est_severity" "assigned_level"
+          "t_triage_start" "t_triage_end" "t_bed" "t_doctor" "t_out" "disposition" "died_waiting"] rows
+  output-print "patient table exported"
+end
