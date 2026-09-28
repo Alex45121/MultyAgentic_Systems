@@ -1,0 +1,53 @@
+; =====================================================================
+;  MAP / FLOOR PLAN
+;  Draws zones, bed grid and labels. Called once from setup.
+; =====================================================================
+to build-floor
+  ask patches [
+    set zone "" set bed-kind "" set bed-id "" set bed-order 0 set occupant nobody set bed-open? false
+    set pcolor black
+  ]
+  set waiting-patches patches with [ pxcor >= 1 and pxcor <= 9 and pycor >= 2 and pycor <= 20 ]
+  ask waiting-patches [ set zone "waiting" set pcolor 2 ]
+  set bedq-patches patches with [ pxcor >= 15 and pxcor <= 20 and pycor >= 2 and pycor <= 20 ]
+  ask bedq-patches [ set zone "bed-queue" set pcolor 2 ]
+  set desk-patches (list (patch 12 13) (patch 12 9))
+  ask patch 12 13 [ set pcolor pink - 2 ]
+  if co-triage? and co-triage-mode = "parallel" [ ask patch 12 9 [ set pcolor pink - 2 ] ]
+  place-beds "resus" resus-beds 23
+  place-beds "general" general-beds 20
+  place-beds "surge" surge-beds 11
+  place-beds "chair" chairs 6
+  set bed-patches patches with [ bed-kind != "" ]
+  ask patch 8 22 [ set plabel "Waiting room" ]
+  ask patch 14 16 [ set plabel "Triage" ]
+  ask patch 21 22 [ set plabel "Wait for bed" ]
+  ask patch 44 24 [ set plabel "Resus" ]
+  ask patch 44 21 [ set plabel "ED beds" ]
+  ask patch 44 12 [ set plabel "Surge" ]
+  ask patch 44 7 [ set plabel "Chairs" ]
+end
+
+to place-beds [ kind n top-y ]
+  let i 0
+  while [ i < n ] [
+    ask patch (24 + 2 * (i mod 10)) (top-y - 2 * floor (i / 10)) [
+      set bed-kind kind
+      set bed-id (word kind "-" (i + 1))
+      set bed-order i
+      set occupant nobody
+      set bed-open? (kind != "surge")
+      recolor-bed
+    ]
+    set i i + 1
+  ]
+end
+
+to recolor-bed  ; patch procedure
+  ifelse not bed-open? [ set pcolor 1 ] [
+    if bed-kind = "resus" [ set pcolor red - 3 ]
+    if bed-kind = "general" [ set pcolor 5 ]
+    if bed-kind = "surge" [ set pcolor 4 ]
+    if bed-kind = "chair" [ set pcolor brown - 2 ]
+  ]
+end

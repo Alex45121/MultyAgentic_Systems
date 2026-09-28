@@ -1,0 +1,91 @@
+; =====================================================================
+;  PATIENT
+; =====================================================================
+to init-patient [ row ]
+  set pid item 0 row
+  set arrival floor (item 1 row)
+  set severity item 2 row
+  set init-severity severity
+  set true-level level-of severity
+  set source item 3 row
+  set transport item 4 row
+  set agent-name (word "patient_" pid)
+  set inbox [] set mci-belief? false
+  set stage "arrival"
+  set frailty exp (random-normal 0 frailty-sd)
+  set patience ifelse-value (true-level >= 3)
+    [ 30 + random-exponential (item (true-level - 3) patience-means) ] [ 1000000000 ]
+  set est-severity -1 set assigned-level 0 set expectant-at-triage? false
+  set my-bed nobody set doomed? false set p-timer 0 set resume-remaining -1
+  set t-triage-start -1 set t-triage-end -1 set t-bed -1 set t-doctor -1 set t-disp -1 set t-out -1
+  set disposition "" set died-waiting? false
+  set shape "person" set size 0.9 set color white
+  move-to one-of waiting-patches
+end
+
+to patient-step
+  update-severity
+  if member? stage pre-doctor-stages and severity >= 10 [
+    set died-waiting? true
+    finish-patient "deceased" agent-name
+    stop
+  ]
+  if stage = "arrival" [
+    if ticks - arrival >= arrival-check-min [
+      set stage "waiting-triage"
+      send-msg agent-name the-triager "ARRIVED" self
+    ]
+    stop
+  ]
+  ; goal-directed: a patient who feels well enough and waited too long gives up
+  if (stage = "waiting-triage" or stage = "waiting-bed") and (level-of severity) >= 3 and (ticks - arrival) > patience [
+    finish-patient "lwbs" agent-name
+    stop
+  ]
+  if stage = "diagnostics" [
+    set p-timer p-timer - 1
+    if p-timer <= 0 [ set stage "waiting-reassess" ]
+  ]
+end
+
+to update-severity
+  ifelse member? stage pre-doctor-stages [
+    let f ifelse-value (stage = "waiting-doctor") [ in-bed-factor ] [ 1 ]
+    let rate det-a * exp (det-b * (severity - 10))
+    set severity min list 10 (severity + rate * f * frailty)
+  ] [
+    set severity max list 0.5 (severity - recovery-rate)
+  ]
+end
+
+; ends a patient's stay: counts the outcome, records it and removes the turtle
+to finish-patient [ disp by ]
+  set disposition disp
+  set t-out ticks
+  if disp = "deceased" [
+    set deaths deaths + 1
+    ifelse died-waiting? [ set deaths-waiting deaths-waiting + 1 ] [ set deaths-treatment deaths-treatment + 1 ]
+    if init-severity < expectant-threshold [ set preventable-deaths preventable-deaths + 1 ]
+  ]
+  if disp = "lwbs" [ set lwbs lwbs + 1 ]
+  if disp = "discharged" [ set discharged discharged + 1 ]
+  if disp = "admitted" [ set admitted admitted + 1 ]
+  if disp = "transferred" [ set transferred transferred + 1 ]
+  set records lput patient-record records
+  if my-bed != nobody [ ask my-bed [ if occupant = myself [ set occupant nobody ] ] ]
+  if by != "bed_manager" [ send-msg by the-bed-manager "PATIENT_LEFT" pid ]
+  die
+end
+
+; [0 pid 1 source 2 transport 3 arrival 4 init-severity 5 true-level 6 est-severity 7 assigned-level
+;  8 t-triage-start 9 t-triage-end 10 t-bed 11 t-doctor 12 t-out 13 disposition 14 died-waiting?]
+to-report patient-record
+  report (list pid source transport arrival init-severity true-level (precision est-severity 2) assigned-level
+               t-triage-start t-triage-end t-bed t-doctor t-out disposition died-waiting?)
+end
+
+to-report patient-color
+  if assigned-level = 0 [ report white ]
+  if mci? and est-severity >= expectant-threshold [ report gray - 2 ]
+  report mts-color assigned-level
+end

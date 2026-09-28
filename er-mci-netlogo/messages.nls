@@ -1,0 +1,41 @@
+; =====================================================================
+;  MESSAGING
+; =====================================================================
+; message = [kind payload sender-name]
+to send-msg [ sender-name receiver kind payload ]
+  count-msg kind
+  set msg-log lput (word "t=" ticks " " sender-name " -> " [agent-name] of receiver " : " kind) msg-log
+  if length msg-log > 300 [ set msg-log but-first msg-log ]
+  ask receiver [ set inbox lput (list kind payload sender-name) inbox ]
+end
+
+to broadcast [ sender-name kind payload ]
+  foreach sort turtles with [ breed = triagers or breed = bedmanagers or breed = doctors ] [ r ->
+    send-msg sender-name r kind payload
+  ]
+end
+
+to count-msg [ kind ]
+  table:put msg-counts kind (1 + tget-num msg-counts kind)
+end
+
+to-report take-inbox
+  let msgs inbox
+  set inbox []
+  report msgs
+end
+
+to handle-common [ m ]
+  if first m = "MCI_DECLARED" [ set mci-belief? true ]
+  if first m = "STAND_DOWN" [ set mci-belief? false ]
+end
+
+to log-event [ text ]
+  output-print (word "t=" ticks "  " text)
+end
+
+to show-messages
+  output-print "--- last 25 messages ---"
+  foreach sublist msg-log (max list 0 (length msg-log - 25)) (length msg-log) [ s -> output-print s ]
+  output-print (word "--- totals: " table:to-list msg-counts)
+end

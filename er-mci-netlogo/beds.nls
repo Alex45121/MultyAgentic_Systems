@@ -1,0 +1,150 @@
+; =====================================================================
+;  BED MANAGER
+; =====================================================================
+to bm-step
+  foreach take-inbox [ m ->
+    handle-common m
+    if first m = "TRIAGED" [ set waiting lput (item 1 m) waiting ]
+    if first m = "MCI_DECLARED" [
+      if surge-open-at < 0 and any? bed-patches with [ not bed-open? ] [ set surge-open-at ticks + surge-activation ]
+    ]
+    if first m = "DISPOSITION" [ dispose (first item 1 m) (last item 1 m) ]
+  ]
+  set waiting filter [ p -> p != nobody ] waiting
+  set boarders filter [ p -> p != nobody ] boarders
+  set transfers filter [ p -> p != nobody ] transfers
+
+  if surge-open-at >= 0 and ticks >= surge-open-at [
+    ask bed-patches with [ not bed-open? ] [ set bed-open? true recolor-bed ]
+    log-event "Bed manager opened surge beds"
+    set surge-open-at -1
+  ]
+
+  ; ward beds free up over time; boarders move up by priority
+  set ward-free ward-free + ward-release-per-hour / 60
+  set boarders sort-by [ [a b] -> key-less? (prio-key a false) (prio-key b false) ] boarders
+  while [ not empty? boarders and ward-free >= 1 ] [
+    let p first boarders
+    set boarders but-first boarders
+    set ward-free ward-free - 1
+    ask p [ finish-patient "admitted" "bed_manager" ]
+  ]
+  ; proactive: in MCI mode, long boarders go to other hospitals to free ED beds
+  if mci-belief? [
+    foreach boarders [ p ->
+      if ticks - [t-disp] of p >= boarding-transfer-after [
+        set boarders remove p boarders
+        start-transfer p
+      ]
+    ]
+  ]
+  foreach transfers [ p ->
+    ask p [ set p-timer p-timer - 1 ]
+    if [p-timer] of p <= 0 [
+      set transfers remove p transfers
+      ask p [ finish-patient "transferred" "bed_manager" ]
+    ]
+  ]
+  place-waiting
+  request-preemption
+end
+
+; priority: normal mode = most severe first; MCI mode = expectant patients go last
+to-report prio-key [ p use-mci ]
+  let is-expectant? use-mci and [est-severity] of p >= expectant-threshold
+  report (list (ifelse-value is-expectant? [1] [0]) ([assigned-level] of p) ([t-triage-end] of p))
+end
+
+to-report key-less? [ k1 k2 ]
+  if empty? k1 [ report false ]
+  if first k1 < first k2 [ report true ]
+  if first k1 > first k2 [ report false ]
+  report key-less? (but-first k1) (but-first k2)
+end
+
+to-report eligible-kinds [ p use-mci ]
+  if use-mci and [est-severity] of p >= expectant-threshold [ report ["general" "surge"] ]
+  let lvl [assigned-level] of p
+  if lvl = 1 [ report ["resus" "general" "surge"] ]
+  if lvl <= 3 [ report ["general" "surge"] ]
+  if use-mci [ report ["chair"] ]
+  report ["chair" "general"]
+end
+
+to place-waiting
+  let m mci-belief?
+  foreach sort-by [ [a b] -> key-less? (prio-key a m) (prio-key b m) ] waiting [ p ->
+    let placed? false
+    foreach eligible-kinds p m [ k ->
+      if not placed? [
+        let free-beds bed-patches with [ bed-kind = k and bed-open? and occupant = nobody ]
+        if any? free-beds [
+          let b min-one-of free-beds [ bed-order ]
+          ask b [ set occupant p ]
+          ask p [ set my-bed b set stage "waiting-doctor" set t-bed ticks move-to b ]
+          set waiting remove p waiting
+          set placed? true
+        ]
+      ]
+    ]
+  ]
+end
+
+; if red/orange patients lie in a bed with no free doctor, ask the doctor on the
+; least urgent task to hand over (the doctor decides and yields)
+to request-preemption
+  let m mci-belief?
+  let urgent patients with [ stage = "waiting-doctor" and assigned-level <= 2 and not (m and est-severity >= expectant-threshold) ]
+  if not any? urgent [ stop ]
+  let active-docs doctors with [ ticks >= available-from ]
+  let need (count urgent) - (count active-docs with [ current-patient = nobody ])
+  if need <= 0 [ stop ]
+  let busy active-docs with [ current-patient != nobody and
+    ([stage] of current-patient = "evaluation" or [stage] of current-patient = "reassessment") and
+    ([assigned-level] of current-patient >= 3 or (m and [est-severity] of current-patient >= expectant-threshold)) ]
+  let ordered sort-by [ [a b] -> key-less? (prio-key ([current-patient] of b) m) (prio-key ([current-patient] of a) m) ] (sort busy)
+  foreach sublist ordered 0 (min list need (length ordered)) [ d ->
+    send-msg agent-name d "PREEMPT" ([current-patient] of d)
+  ]
+end
+
+; a doctor asks for work: highest-priority patient in a bed needing evaluation or reassessment
+to-report next-task
+  let m mci-belief?
+  let cands patients with [ my-bed != nobody and (stage = "waiting-doctor" or stage = "waiting-reassess") ]
+  if not any? cands [ report nobody ]
+  report first sort-by [ [a b] -> key-less? (task-key a m) (task-key b m) ] (sort cands)
+end
+
+to-report task-key [ p m ]
+  let k prio-key p m
+  report (list (item 0 k) (item 1 k) (ifelse-value ([stage] of p = "waiting-reassess") [0] [1]) (item 2 k))
+end
+
+to dispose [ p outcome ]
+  ask p [ set t-disp ticks ]
+  if outcome = "discharged" [
+    ask p [ finish-patient "discharged" "bed_manager" ]
+    stop
+  ]
+  if outcome = "admitted" [
+    ifelse not ward-boarding? [
+      ask p [ finish-patient "admitted" "bed_manager" ]
+    ] [
+      ifelse ward-free >= 1 [
+        set ward-free ward-free - 1
+        ask p [ finish-patient "admitted" "bed_manager" ]
+      ] [
+        ask p [ set stage "boarding" ]
+        set boarders lput p boarders
+      ]
+    ]
+    stop
+  ]
+  start-transfer p
+end
+
+to start-transfer [ p ]
+  ask p [ set stage "awaiting-transfer" set p-timer transfer-transport ]
+  set transfers lput p transfers
+end

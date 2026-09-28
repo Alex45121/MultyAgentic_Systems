@@ -1,0 +1,40 @@
+; =====================================================================
+;  HELPERS
+; =====================================================================
+to-report tget [ tbl key ]
+  ifelse table:has-key? tbl key [ report table:get tbl key ] [ report [] ]
+end
+
+to-report tget-num [ tbl key ]
+  ifelse table:has-key? tbl key [ report table:get tbl key ] [ report 0 ]
+end
+
+to-report lognormal [ m sd ]
+  let mu (ln (max list m 0.000001)) - sd * sd / 2
+  report exp (mu + sd * random-normal 0 1)
+end
+
+to-report level-of [ s ]    ; Manchester Triage System level from severity (0 well .. 10 dead)
+  if s >= 8 [ report 1 ]
+  if s >= 6 [ report 2 ]
+  if s >= 4 [ report 3 ]
+  if s >= 2 [ report 4 ]
+  report 5
+end
+
+to-report mts-target [ lvl ]  ; max minutes to see a doctor
+  report item (lvl - 1) [0 10 60 120 240]
+end
+
+to-report mts-color [ lvl ]
+  report item (lvl - 1) (list red orange yellow green blue)
+end
+
+to-report percentile [ xs q ]
+  if empty? xs [ report 0 ]
+  let s sort xs
+  let idx (q / 100) * (length s - 1)
+  let lo floor idx
+  let hi ceiling idx
+  report (item lo s) + (idx - lo) * ((item hi s) - (item lo s))
+end
