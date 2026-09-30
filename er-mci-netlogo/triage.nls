@@ -10,7 +10,9 @@ to setup-triage
     set my-desk item 0 desk-patches
     set current-patient nobody
     set remaining 0
+    set retriaging? false
     set nurse2 nobody
+    set last-check table:make
     set shape "person" set color pink set size 1.2 setxy 13 13
     set the-triager self
   ]
@@ -20,6 +22,7 @@ to setup-triage
       set shape "person" set color pink set size 1.2
       set current-patient nobody
       set remaining 0
+      set retriaging? false
       ifelse co-triage-mode = "parallel" [
         set my-desk item 1 desk-patches
         setxy 13 9
@@ -56,7 +59,9 @@ to own-desk-step
   if current-patient != nobody [
     set remaining remaining - 1
     if remaining <= 0 [
-      complete-triage current-patient
+      ifelse retriaging?
+        [ finish-retriage current-patient ]
+        [ complete-triage current-patient ]
       set current-patient nobody
     ]
   ]
@@ -64,8 +69,18 @@ to own-desk-step
     let nxt next-triage-patient
     set current-patient nxt
     set remaining triage-duration
+    set retriaging? false
     let d my-desk
     ask nxt [ set stage "in-triage" set t-triage-start ticks move-to d ]
+  ]
+  if current-patient = nobody and empty? queue and retriage? [
+    let p retriage-candidate
+    if p != nobody [
+      table:put last-check [pid] of p ticks
+      set current-patient p
+      set remaining retriage-time
+      set retriaging? true
+    ]
   ]
 end
 
@@ -77,19 +92,32 @@ to request-desk-step [ lead ]
     set remaining remaining - 1
     if remaining <= 0 [
       let p current-patient
-      ask lead [ complete-triage p ]
+      ifelse retriaging?
+        [ ask lead [ finish-retriage p ] ]
+        [ ask lead [ complete-triage p ] ]
       set current-patient nobody
     ]
   ]
   if current-patient = nobody [
     count-msg "READY"
-    if not empty? [queue] of lead [
+    ifelse not empty? [queue] of lead [
       let nxt [next-triage-patient] of lead
       count-msg "ASSIGN"
       set current-patient nxt
       set remaining [triage-duration] of lead
+      set retriaging? false
       let d my-desk
       ask nxt [ set stage "in-triage" set t-triage-start ticks move-to d ]
+    ] [
+      if retriage? [
+        let p [retriage-candidate] of lead
+        if p != nobody [
+          ask lead [ table:put last-check [pid] of p ticks ]
+          set current-patient p
+          set remaining retriage-time
+          set retriaging? true
+        ]
+      ]
     ]
   ]
 end
@@ -101,6 +129,40 @@ to mirror-desk-step [ lead ]
   set my-desk [my-desk] of lead
   set current-patient [current-patient] of lead
   set remaining [remaining] of lead
+  set retriaging? [retriaging?] of lead
+end
+
+; =====================================================================
+;  RETRIAGE (Phase 3) - MTS requires waiting patients to be re-checked
+;  periodically; only fires when there is no new arrival to triage first
+; =====================================================================
+
+; lead procedure: ticks since p was last checked (first check = original triage)
+to-report last-check-of [ tbl p ]
+  ifelse table:has-key? tbl [pid] of p
+    [ report table:get tbl [pid] of p ]
+    [ report [t-triage-end] of p ]
+end
+
+; lead procedure: the most overdue waiting-bed patient, or nobody
+to-report retriage-candidate
+  let tbl last-check
+  let due patients with [ stage = "waiting-bed" and (ticks - last-check-of tbl self) >= retriage-interval ]
+  if not any? due [ report nobody ]
+  report min-one-of due [ last-check-of tbl self ]
+end
+
+; lead procedure: conclude a re-check - upgrade-only, so a noisy re-check can
+; never quietly demote someone who is still critical; patient never moved
+; and stayed in stage "waiting-bed" the whole time
+to finish-retriage [ p ]
+  let sd ifelse-value paired? [ paired-error-sd ] [ solo-error-sd ]
+  if mci-belief? [ set sd sd + mci-extra-error-sd ]
+  let new-est max list 0 (min list 10 ([severity] of p + random-normal 0 sd))
+  if new-est > [est-severity] of p [
+    ask p [ set est-severity new-est set assigned-level level-of new-est ]
+    send-msg agent-name the-bed-manager "RETRIAGED" p
+  ]
 end
 
 ; obviously critical patients and ambulance patients announced as urgent jump the queue
