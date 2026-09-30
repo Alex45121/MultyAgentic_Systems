@@ -194,7 +194,6 @@ end]]></code>
     <slider x="5" step="1" y="177" max="100" width="220" display="scenario-seed" height="50" min="1" direction="Horizontal" default="17.0" variable="scenario-seed"></slider>
     <input x="5" multiline="false" y="232" height="60" variable="scenario-file" type="string" width="220">scenarios/mci_080.csv</input>
     <slider x="5" step="1" y="297" max="1000" width="220" display="sim-seed" height="50" min="1" direction="Horizontal" default="1.0" variable="sim-seed"></slider>
-    <note x="8" y="355" backgroundDark="0" fontSize="11" width="217" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Triage (the experiment variable)</note>
     <switch x="5" y="378" height="40" on="true" variable="co-triage?" width="220" display="co-triage?"></switch>
     <chooser x="5" y="423" height="60" variable="co-triage-mode" current="1" width="220" display="co-triage-mode">
       <choice type="string" value="paired"></choice>
@@ -202,11 +201,9 @@ end]]></code>
     </chooser>
     <slider x="5" step="0.5" y="488" max="10" width="220" display="triage-time" height="50" min="1" direction="Horizontal" default="4.0" variable="triage-time" units="min"></slider>
     <slider x="5" step="0.1" y="543" max="10" width="220" display="expectant-threshold" height="50" min="8" direction="Horizontal" default="9.2" variable="expectant-threshold"></slider>
-    <note x="8" y="599" backgroundDark="0" fontSize="11" width="217" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Re-triage (Phase 3)</note>
-    <switch x="5" y="622" height="40" on="false" variable="retriage?" width="220" display="retriage?"></switch>
+    <switch x="5" y="622" height="40" on="true" variable="retriage?" width="220" display="retriage?"></switch>
     <slider x="5" step="5" y="667" max="60" width="220" display="retriage-interval" height="50" min="5" direction="Horizontal" default="15.0" variable="retriage-interval" units="min"></slider>
-    <note x="8" y="722" backgroundDark="0" fontSize="11" width="217" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Extra MCI desk (Phase 4)</note>
-    <switch x="5" y="745" height="40" on="false" variable="mci-extra-desk?" width="220" display="mci-extra-desk?"></switch>
+    <switch x="5" y="745" height="40" on="true" variable="mci-extra-desk?" width="220" display="mci-extra-desk?"></switch>
     <slider x="5" step="1" y="790" max="60" width="220" display="extra-desk-delay" height="50" min="0" direction="Horizontal" default="15.0" variable="extra-desk-delay" units="min"></slider>
     <monitor x="5" precision="0" y="850" height="60" fontSize="11" width="100" display="minute">ticks</monitor>
     <monitor x="110" precision="0" y="850" height="60" fontSize="11" width="100" display="mode">mode-label</monitor>
@@ -292,6 +289,9 @@ end]]></code>
         <update>plot n-boarding</update>
       </pen>
     </plot>
+    <note x="8" y="599" backgroundDark="0" fontSize="11" width="217" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Re-triage</note>
+    <note x="8" y="722" backgroundDark="0" fontSize="11" width="217" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Extra MCI desk</note>
+    <note x="8" y="355" backgroundDark="0" fontSize="11" width="217" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Triage</note>
   </widgets>
   <info><![CDATA[## WHAT IS IT?
 
