@@ -1,4 +1,28 @@
 ; =====================================================================
+;  TRIAGE SETUP
+; =====================================================================
+to setup-triage
+  create-triagers 1 [
+    set agent-name "triage" set inbox [] set mci-belief? false
+    set paired? (co-triage? and co-triage-mode = "paired")
+    let n ifelse-value (co-triage? and co-triage-mode = "parallel") [2] [1]
+    set station-patients n-values n [ nobody ]
+    set station-remaining n-values n [ 0 ]
+    set queue []
+    set expected-urgent []
+    set shape "person" set color pink set size 1.2 setxy 13 13
+    set the-triager self
+  ]
+  if co-triage? [
+    create-nurses 1 [
+      set agent-name "nurse-2" set inbox [] set mci-belief? false
+      set shape "person" set color pink set size 1.2
+      ifelse co-triage-mode = "parallel" [ setxy 13 9 ] [ setxy 11 13 ]
+    ]
+  ]
+end
+
+; =====================================================================
 ;  TRIAGE AGENT
 ; =====================================================================
 to triage-step

@@ -119,24 +119,7 @@ to create-staff
     set shape "person" set color gray set size 1.4 setxy 1 23 set label "Incident cmd"
     set the-commander self
   ]
-  create-triagers 1 [
-    set agent-name "triage" set inbox [] set mci-belief? false
-    set paired? (co-triage? and co-triage-mode = "paired")
-    let n ifelse-value (co-triage? and co-triage-mode = "parallel") [2] [1]
-    set station-patients n-values n [ nobody ]
-    set station-remaining n-values n [ 0 ]
-    set queue []
-    set expected-urgent []
-    set shape "person" set color pink set size 1.2 setxy 13 13
-    set the-triager self
-  ]
-  if co-triage? [
-    create-nurses 1 [
-      set agent-name "nurse-2" set inbox [] set mci-belief? false
-      set shape "person" set color pink set size 1.2
-      ifelse co-triage-mode = "parallel" [ setxy 13 9 ] [ setxy 11 13 ]
-    ]
-  ]
+  setup-triage
   create-bedmanagers 1 [
     set agent-name "bed_manager" set inbox [] set mci-belief? false
     set waiting [] set boarders [] set transfers [] set surge-open-at -1 set ward-free free-ward-beds
