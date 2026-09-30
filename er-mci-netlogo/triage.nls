@@ -80,9 +80,12 @@ to own-desk-step
   if current-patient != nobody [
     set remaining remaining - 1
     if remaining <= 0 [
-      ifelse retriaging?
-        [ finish-retriage current-patient ]
-        [ complete-triage current-patient ]
+      ifelse retriaging? [
+        finish-retriage current-patient
+        move-to my-desk
+      ] [
+        complete-triage current-patient
+      ]
       set current-patient nobody
     ]
   ]
@@ -101,6 +104,8 @@ to own-desk-step
       set current-patient p
       set remaining retriage-time
       set retriaging? true
+      move-to p
+      set xcor xcor + 0.3
     ]
   ]
 end
@@ -113,9 +118,12 @@ to request-desk-step [ lead ]
     set remaining remaining - 1
     if remaining <= 0 [
       let p current-patient
-      ifelse retriaging?
-        [ ask lead [ finish-retriage p ] ]
-        [ ask lead [ complete-triage p ] ]
+      ifelse retriaging? [
+        ask lead [ finish-retriage p ]
+        move-to my-desk
+      ] [
+        ask lead [ complete-triage p ]
+      ]
       set current-patient nobody
     ]
   ]
@@ -137,6 +145,8 @@ to request-desk-step [ lead ]
           set current-patient p
           set remaining retriage-time
           set retriaging? true
+          move-to p
+          set xcor xcor + 0.3
         ]
       ]
     ]
@@ -151,6 +161,8 @@ to mirror-desk-step [ lead ]
   set current-patient [current-patient] of lead
   set remaining [remaining] of lead
   set retriaging? [retriaging?] of lead
+  move-to lead
+  set xcor xcor + 0.3
 end
 
 ; =====================================================================
