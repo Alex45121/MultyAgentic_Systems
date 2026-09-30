@@ -457,6 +457,10 @@ MAS course team project, University of Twente: Kralev, Alagawadi, Tsompanoglou, 
           <value value="false"></value>
           <value value="true"></value>
         </enumeratedValueSet>
+        <enumeratedValueSet variable="co-triage-mode">
+          <value value="&quot;parallel&quot;"></value>
+          <value value="&quot;paired&quot;"></value>
+        </enumeratedValueSet>
         <steppedValueSet variable="sim-seed" first="1" step="1" last="30"></steppedValueSet>
       </constants>
     </experiment>
@@ -485,6 +489,10 @@ MAS course team project, University of Twente: Kralev, Alagawadi, Tsompanoglou, 
         <enumeratedValueSet variable="co-triage?">
           <value value="false"></value>
           <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="co-triage-mode">
+          <value value="&quot;parallel&quot;"></value>
+          <value value="&quot;paired&quot;"></value>
         </enumeratedValueSet>
         <steppedValueSet variable="sim-seed" first="1" step="1" last="5"></steppedValueSet>
       </constants>
