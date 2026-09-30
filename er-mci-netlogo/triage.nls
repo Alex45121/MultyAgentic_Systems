@@ -5,11 +5,12 @@ to setup-triage
   create-triagers 1 [
     set agent-name "triage" set inbox [] set mci-belief? false
     set paired? (co-triage? and co-triage-mode = "paired")
-    let n ifelse-value (co-triage? and co-triage-mode = "parallel") [2] [1]
-    set station-patients n-values n [ nobody ]
-    set station-remaining n-values n [ 0 ]
     set queue []
     set expected-urgent []
+    set my-desk item 0 desk-patches
+    set current-patient nobody
+    set remaining 0
+    set nurse2 nobody
     set shape "person" set color pink set size 1.2 setxy 13 13
     set the-triager self
   ]
@@ -17,7 +18,16 @@ to setup-triage
     create-nurses 1 [
       set agent-name "nurse-2" set inbox [] set mci-belief? false
       set shape "person" set color pink set size 1.2
-      ifelse co-triage-mode = "parallel" [ setxy 13 9 ] [ setxy 11 13 ]
+      set current-patient nobody
+      set remaining 0
+      ifelse co-triage-mode = "parallel" [
+        set my-desk item 1 desk-patches
+        setxy 13 9
+      ] [
+        set my-desk item 0 desk-patches
+        setxy 11 13
+      ]
+      ask the-triager [ set nurse2 myself ]
     ]
   ]
 end
@@ -32,26 +42,65 @@ to triage-step
     if first m = "EXPECT_URGENT" [ set expected-urgent lput (item 1 m) expected-urgent ]
   ]
   set queue filter [ p -> p != nobody ] queue
-  let i 0
-  while [ i < length station-patients ] [
-    let p item i station-patients
-    if p != nobody [
-      set station-remaining replace-item i station-remaining ((item i station-remaining) - 1)
-      if (item i station-remaining) <= 0 [
-        complete-triage p
-        set station-patients replace-item i station-patients nobody
-        set p nobody
-      ]
-    ]
-    if p = nobody and not empty? queue [
-      let nxt next-triage-patient
-      let desk item i desk-patches
-      ask nxt [ set stage "in-triage" set t-triage-start ticks move-to desk ]
-      set station-patients replace-item i station-patients nxt
-      set station-remaining replace-item i station-remaining triage-duration
-    ]
-    set i i + 1
+  own-desk-step
+  if co-triage? [
+    ifelse co-triage-mode = "parallel"
+      [ ask nurse2 [ request-desk-step myself ] ]
+      [ ask nurse2 [ mirror-desk-step myself ] ]
   ]
+end
+
+; lead procedure: works her own desk directly from her own queue - unchanged
+; logic from before Phase 2, just using her own fields instead of a list slot
+to own-desk-step
+  if current-patient != nobody [
+    set remaining remaining - 1
+    if remaining <= 0 [
+      complete-triage current-patient
+      set current-patient nobody
+    ]
+  ]
+  if current-patient = nobody and not empty? queue [
+    let nxt next-triage-patient
+    set current-patient nxt
+    set remaining triage-duration
+    let d my-desk
+    ask nxt [ set stage "in-triage" set t-triage-start ticks move-to d ]
+  ]
+end
+
+; nurse-2 procedure (parallel mode): a free nurse asks the lead for work -
+; same pattern as doctors' REQUEST_WORK, a direct call plus a counted
+; message so there is no one-tick inbox delay
+to request-desk-step [ lead ]
+  if current-patient != nobody [
+    set remaining remaining - 1
+    if remaining <= 0 [
+      let p current-patient
+      ask lead [ complete-triage p ]
+      set current-patient nobody
+    ]
+  ]
+  if current-patient = nobody [
+    count-msg "READY"
+    if not empty? [queue] of lead [
+      let nxt [next-triage-patient] of lead
+      count-msg "ASSIGN"
+      set current-patient nxt
+      set remaining [triage-duration] of lead
+      let d my-desk
+      ask nxt [ set stage "in-triage" set t-triage-start ticks move-to d ]
+    ]
+  ]
+end
+
+; nurse-2 procedure (paired mode): shares the lead's desk and patient instead
+; of pulling her own - paired triage is one task worked by two people, so
+; there is nothing separate to request
+to mirror-desk-step [ lead ]
+  set my-desk [my-desk] of lead
+  set current-patient [current-patient] of lead
+  set remaining [remaining] of lead
 end
 
 ; obviously critical patients and ambulance patients announced as urgent jump the queue

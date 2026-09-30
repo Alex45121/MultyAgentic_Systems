@@ -10,7 +10,7 @@ breed [ doctors doctor ]
 breed [ triagers triager ]          ; the triage agent (1 or 2 nurses)
 breed [ bedmanagers bedmanager ]
 breed [ commanders commander ]      ; incident command
-breed [ nurses nurse ]              ; decorative only (second triage nurse)
+breed [ nurses nurse ]              ; second triage nurse: own desk when parallel, shares the lead's desk when paired
 
 globals [
   ; scenario
@@ -39,7 +39,8 @@ patients-own [
   t-triage-start t-triage-end t-bed t-doctor t-disp t-out disposition died-waiting?
 ]
 doctors-own [ on-call? available-from current-patient doc-task remaining busy-minutes preemptions home-patch ]
-triagers-own [ station-patients station-remaining queue expected-urgent paired? ]
+triagers-own [ queue expected-urgent paired? my-desk current-patient remaining nurse2 ]
+nurses-own [ my-desk current-patient remaining ]
 bedmanagers-own [ waiting boarders transfers surge-open-at ward-free ]
 commanders-own [ prenotified last-trigger forecast ]
 patches-own [ zone bed-kind bed-id bed-order occupant bed-open? ]
