@@ -64,12 +64,12 @@ to triage-step
       [ ask nurse2 [ mirror-desk-step myself ] ]
   ]
   if extra-nurse = nobody and extra-desk-open-at >= 0 and ticks >= extra-desk-open-at [
-    open-extra-desk
+    ask the-triager [ open-extra-desk ]
   ]
   if extra-nurse != nobody [
     ask extra-nurse [ extra-desk-step myself extra-nurse-leaving? ]
     if extra-nurse-leaving? and [current-patient] of extra-nurse = nobody [
-      close-extra-desk
+      ask the-triager [ close-extra-desk ]
     ]
   ]
 end
