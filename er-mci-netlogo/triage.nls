@@ -13,6 +13,9 @@ to setup-triage
     set retriaging? false
     set nurse2 nobody
     set last-check table:make
+    set extra-nurse nobody
+    set extra-desk-open-at -1
+    set extra-nurse-leaving? false
     set shape "person" set color pink set size 1.2 setxy 13 13
     set the-triager self
   ]
@@ -43,6 +46,15 @@ to triage-step
     handle-common m
     if first m = "ARRIVED" [ set queue lput (item 1 m) queue ]
     if first m = "EXPECT_URGENT" [ set expected-urgent lput (item 1 m) expected-urgent ]
+    if first m = "MCI_DECLARED" [
+      if mci-extra-desk? and extra-nurse = nobody and extra-desk-open-at < 0 [
+        set extra-desk-open-at ticks + extra-desk-delay
+      ]
+    ]
+    if first m = "STAND_DOWN" [
+      if extra-nurse != nobody [ set extra-nurse-leaving? true ]
+      set extra-desk-open-at -1
+    ]
   ]
   set queue filter [ p -> p != nobody ] queue
   own-desk-step
@@ -50,6 +62,15 @@ to triage-step
     ifelse co-triage-mode = "parallel"
       [ ask nurse2 [ request-desk-step myself ] ]
       [ ask nurse2 [ mirror-desk-step myself ] ]
+  ]
+  if extra-nurse = nobody and extra-desk-open-at >= 0 and ticks >= extra-desk-open-at [
+    open-extra-desk
+  ]
+  if extra-nurse != nobody [
+    ask extra-nurse [ extra-desk-step myself extra-nurse-leaving? ]
+    if extra-nurse-leaving? and [current-patient] of extra-nurse = nobody [
+      close-extra-desk
+    ]
   ]
 end
 
@@ -163,6 +184,92 @@ to finish-retriage [ p ]
     ask p [ set est-severity new-est set assigned-level level-of new-est ]
     send-msg agent-name the-bed-manager "RETRIAGED" p
   ]
+end
+
+; =====================================================================
+;  EXTRA MCI DESK (Phase 4) - the disaster plan puts a temporary triage
+;  officer at the entrance once an MCI is declared; she is always solo
+;  speed/error regardless of the main pair's co-triage-mode, and leaves
+;  once stood down (after finishing whoever she is with)
+; =====================================================================
+
+to-report extra-desk-patch
+  report patch 12 11
+end
+
+; lead procedure: disaster plan opens a temporary entrance triage desk
+to open-extra-desk
+  create-ordered-nurses 1 [
+    set agent-name "nurse-extra" set inbox [] set mci-belief? false
+    set shape "person" set color pink set size 1.2
+    set my-desk extra-desk-patch
+    set current-patient nobody
+    set remaining 0
+    set retriaging? false
+    move-to my-desk
+    ask the-triager [ set extra-nurse myself ]
+  ]
+  ask extra-desk-patch [ set pcolor pink - 2 ]
+  set extra-desk-open-at -1
+  log-event "Extra triage desk opened"
+end
+
+; lead procedure: she has just finished whoever she was with - send her home
+to close-extra-desk
+  ask extra-desk-patch [ set pcolor black ]
+  ask extra-nurse [ die ]
+  set extra-nurse nobody
+  set extra-nurse-leaving? false
+  log-event "Extra triage desk closed"
+end
+
+; extra-nurse procedure: same ask-the-lead-for-work pattern as nurse 2 in
+; parallel mode, but stops taking new patients once stood down, and always
+; uses solo speed/error - she is a temporary crisis hire, not a trained pair
+to extra-desk-step [ lead leaving? ]
+  if current-patient != nobody [
+    set remaining remaining - 1
+    if remaining <= 0 [
+      let p current-patient
+      ask lead [ complete-solo-triage p ]
+      set current-patient nobody
+    ]
+  ]
+  if current-patient = nobody and not leaving? [
+    count-msg "READY"
+    if not empty? [queue] of lead [
+      let nxt [next-triage-patient] of lead
+      count-msg "ASSIGN"
+      set current-patient nxt
+      set remaining [solo-triage-duration] of lead
+      let d my-desk
+      ask nxt [ set stage "in-triage" set t-triage-start ticks move-to d ]
+    ]
+  ]
+end
+
+; lead procedure: solo duration for the extra nurse, independent of the main
+; pair's paired?/co-triage-mode, but still affected by MCI mode like everyone
+to-report solo-triage-duration
+  let m triage-time
+  if mci-belief? [ set m m * mci-triage-factor ]
+  report max list 0.5 (lognormal m 0.35)
+end
+
+; lead procedure: solo error for the extra nurse, independent of paired?
+to complete-solo-triage [ p ]
+  let sd solo-error-sd
+  if mci-belief? [ set sd sd + mci-extra-error-sd ]
+  let tri-mci mci-belief?
+  ask p [
+    set est-severity max list 0 (min list 10 (severity + random-normal 0 sd))
+    set assigned-level level-of est-severity
+    set expectant-at-triage? (tri-mci and est-severity >= expectant-threshold)
+    set t-triage-end ticks
+    set stage "waiting-bed"
+    move-to one-of bedq-patches
+  ]
+  send-msg agent-name the-bed-manager "TRIAGED" p
 end
 
 ; obviously critical patients and ambulance patients announced as urgent jump the queue

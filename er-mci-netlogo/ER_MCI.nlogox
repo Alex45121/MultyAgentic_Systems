@@ -39,7 +39,8 @@ patients-own [
   t-triage-start t-triage-end t-bed t-doctor t-disp t-out disposition died-waiting?
 ]
 doctors-own [ on-call? available-from current-patient doc-task remaining busy-minutes preemptions home-patch ]
-triagers-own [ queue expected-urgent paired? my-desk current-patient remaining retriaging? nurse2 last-check ]
+triagers-own [ queue expected-urgent paired? my-desk current-patient remaining retriaging? nurse2 last-check
+                extra-nurse extra-desk-open-at extra-nurse-leaving? ]
 nurses-own [ my-desk current-patient remaining retriaging? ]
 bedmanagers-own [ waiting boarders transfers surge-open-at ward-free ]
 commanders-own [ prenotified last-trigger forecast ]
@@ -288,6 +289,9 @@ end]]></code>
     <note x="8" y="940" backgroundDark="0" fontSize="11" width="217" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Re-triage (Phase 3)</note>
     <switch x="5" y="963" height="40" on="false" variable="retriage?" width="220" display="retriage?"></switch>
     <slider x="5" step="5" y="1008" max="60" width="220" display="retriage-interval" height="50" min="5" direction="Horizontal" default="15.0" variable="retriage-interval" units="min"></slider>
+    <note x="8" y="1063" backgroundDark="0" fontSize="11" width="217" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Extra MCI desk (Phase 4)</note>
+    <switch x="5" y="1086" height="40" on="false" variable="mci-extra-desk?" width="220" display="mci-extra-desk?"></switch>
+    <slider x="5" step="1" y="1131" max="60" width="220" display="extra-desk-delay" height="50" min="0" direction="Horizontal" default="15.0" variable="extra-desk-delay" units="min"></slider>
   </widgets>
   <info><![CDATA[## WHAT IS IT?
 
