@@ -212,7 +212,7 @@ end
 ; lead procedure: disaster plan opens a temporary entrance triage desk
 to open-extra-desk
   set extra-desk-open-at -1
-  create-nurses 1 [
+  hatch-nurses 1 [
     set agent-name "nurse-extra" set inbox [] set mci-belief? false
     set shape "person" set color pink set size 1.2
     set my-desk extra-desk-patch
