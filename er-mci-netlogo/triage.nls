@@ -211,6 +211,7 @@ end
 
 ; lead procedure: disaster plan opens a temporary entrance triage desk
 to open-extra-desk
+  set extra-desk-open-at -1
   create-ordered-nurses 1 [
     set agent-name "nurse-extra" set inbox [] set mci-belief? false
     set shape "person" set color pink set size 1.2
@@ -222,16 +223,16 @@ to open-extra-desk
     ask the-triager [ set extra-nurse myself ]
   ]
   ask extra-desk-patch [ set pcolor pink - 2 ]
-  set extra-desk-open-at -1
   log-event "Extra triage desk opened"
 end
 
 ; lead procedure: she has just finished whoever she was with - send her home
 to close-extra-desk
-  ask extra-desk-patch [ set pcolor black ]
-  ask extra-nurse [ die ]
+  let n extra-nurse
   set extra-nurse nobody
   set extra-nurse-leaving? false
+  ask extra-desk-patch [ set pcolor black ]
+  ask n [ die ]
   log-event "Extra triage desk closed"
 end
 
