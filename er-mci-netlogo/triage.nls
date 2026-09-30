@@ -67,7 +67,8 @@ to triage-step
     ask the-triager [ open-extra-desk ]
   ]
   if extra-nurse != nobody [
-    ask extra-nurse [ extra-desk-step myself extra-nurse-leaving? ]
+    let leaving? extra-nurse-leaving?
+    ask extra-nurse [ extra-desk-step myself leaving? ]
     if extra-nurse-leaving? and [current-patient] of extra-nurse = nobody [
       ask the-triager [ close-extra-desk ]
     ]
