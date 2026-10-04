@@ -10,7 +10,7 @@ breed [ doctors doctor ]
 breed [ triagers triager ]          ; the triage agent (1 or 2 nurses)
 breed [ bedmanagers bedmanager ]
 breed [ commanders commander ]      ; incident command
-breed [ nurses nurse ]              ; decorative only (second triage nurse)
+breed [ nurses nurse ]              ; second triage nurse: own desk when parallel, shares the lead's desk when paired
 
 globals [
   ; scenario
@@ -24,7 +24,7 @@ globals [
   ; constants (see setup-constants)
   max-minutes arrival-check-min grace
   det-a det-b frailty-sd in-bed-factor recovery-rate mort-centre mort-slope patience-means
-  paired-time-factor solo-error-sd paired-error-sd mci-triage-factor mci-extra-error-sd visible-critical
+  paired-time-factor solo-error-sd paired-error-sd mci-triage-factor mci-extra-error-sd visible-critical retriage-time
   eval-times diag-times reassess-time doc-log-sd mci-doc-factor disposition-probs
   surge-activation oncall-delay transfer-transport boarding-transfer-after ward-release-per-hour
   check-interval window horizon prenotify-lead standdown-quiet
@@ -39,7 +39,9 @@ patients-own [
   t-triage-start t-triage-end t-bed t-doctor t-disp t-out disposition died-waiting?
 ]
 doctors-own [ on-call? available-from current-patient doc-task remaining busy-minutes preemptions home-patch ]
-triagers-own [ station-patients station-remaining queue expected-urgent paired? ]
+triagers-own [ queue expected-urgent paired? my-desk current-patient remaining retriaging? nurse2 last-check
+                extra-nurse extra-desk-open-at extra-nurse-leaving? ]
+nurses-own [ my-desk current-patient remaining retriaging? ]
 bedmanagers-own [ waiting boarders transfers surge-open-at ward-free ]
 commanders-own [ prenotified last-trigger forecast ]
 patches-own [ zone bed-kind bed-id bed-order occupant bed-open? ]
@@ -84,6 +86,7 @@ to setup-constants
   set mci-triage-factor 0.6
   set mci-extra-error-sd 0.3
   set visible-critical 8.5
+  set retriage-time 1                 ; assumption: a re-check is quick, much shorter than a full triage
   ; doctors
   set eval-times [30 25 20 12 10]     ; by assigned MTS level
   set diag-times [45 60 75 30 20]     ; by true MTS level
@@ -119,24 +122,7 @@ to create-staff
     set shape "person" set color gray set size 1.4 setxy 1 23 set label "Incident cmd"
     set the-commander self
   ]
-  create-triagers 1 [
-    set agent-name "triage" set inbox [] set mci-belief? false
-    set paired? (co-triage? and co-triage-mode = "paired")
-    let n ifelse-value (co-triage? and co-triage-mode = "parallel") [2] [1]
-    set station-patients n-values n [ nobody ]
-    set station-remaining n-values n [ 0 ]
-    set queue []
-    set expected-urgent []
-    set shape "person" set color pink set size 1.2 setxy 13 13
-    set the-triager self
-  ]
-  if co-triage? [
-    create-nurses 1 [
-      set agent-name "nurse-2" set inbox [] set mci-belief? false
-      set shape "person" set color pink set size 1.2
-      ifelse co-triage-mode = "parallel" [ setxy 13 9 ] [ setxy 11 13 ]
-    ]
-  ]
+  setup-triage
   create-bedmanagers 1 [
     set agent-name "bed_manager" set inbox [] set mci-belief? false
     set waiting [] set boarders [] set transfers [] set surge-open-at -1 set ward-free free-ward-beds
@@ -196,7 +182,7 @@ to inject
   ]
 end]]></code>
   <widgets>
-    <view x="235" wrappingAllowedX="false" y="10" frameRate="30.0" minPycor="0" height="363" showTickCounter="true" patchSize="14.0" fontSize="10" wrappingAllowedY="false" width="634" tickCounterLabel="minutes" maxPycor="24" updateMode="1" maxPxcor="44" minPxcor="0"></view>
+    <view x="236" wrappingAllowedX="false" y="58" frameRate="30.0" minPycor="0" height="363" showTickCounter="true" patchSize="14.0" fontSize="10" wrappingAllowedY="false" width="634" tickCounterLabel="minutes" maxPycor="24" updateMode="1" maxPxcor="44" minPxcor="0"></view>
     <button x="5" y="10" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="70" display="setup">setup</button>
     <button x="80" y="10" height="40" disableUntilTicks="true" forever="true" kind="Observer" width="70" display="go">go</button>
     <button x="155" y="10" height="40" disableUntilTicks="true" forever="false" kind="Observer" width="70" display="step">go</button>
@@ -204,38 +190,41 @@ end]]></code>
       <choice type="string" value="generate"></choice>
       <choice type="string" value="file"></choice>
     </chooser>
-    <slider x="5" step="10" y="122" max="300" width="220" display="casualties" height="50" min="0" direction="Horizontal" default="80.0" variable="casualties"></slider>
-    <slider x="5" step="1" y="177" max="100" width="220" display="scenario-seed" height="50" min="1" direction="Horizontal" default="7.0" variable="scenario-seed"></slider>
+    <slider x="5" step="10" y="122" max="300" width="220" display="casualties" height="50" min="0" direction="Horizontal" default="600.0" variable="casualties"></slider>
+    <slider x="5" step="1" y="177" max="100" width="220" display="scenario-seed" height="50" min="1" direction="Horizontal" default="17.0" variable="scenario-seed"></slider>
     <input x="5" multiline="false" y="232" height="60" variable="scenario-file" type="string" width="220">scenarios/mci_080.csv</input>
     <slider x="5" step="1" y="297" max="1000" width="220" display="sim-seed" height="50" min="1" direction="Horizontal" default="1.0" variable="sim-seed"></slider>
-    <note x="8" y="355" backgroundDark="0" fontSize="11" width="217" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Triage (the experiment variable)</note>
-    <switch x="5" y="378" height="40" on="false" variable="co-triage?" width="220" display="co-triage?"></switch>
-    <chooser x="5" y="423" height="60" variable="co-triage-mode" current="0" width="220" display="co-triage-mode">
+    <switch x="5" y="378" height="40" on="true" variable="co-triage?" width="220" display="co-triage?"></switch>
+    <chooser x="5" y="423" height="60" variable="co-triage-mode" current="1" width="220" display="co-triage-mode">
       <choice type="string" value="paired"></choice>
       <choice type="string" value="parallel"></choice>
     </chooser>
     <slider x="5" step="0.5" y="488" max="10" width="220" display="triage-time" height="50" min="1" direction="Horizontal" default="4.0" variable="triage-time" units="min"></slider>
     <slider x="5" step="0.1" y="543" max="10" width="220" display="expectant-threshold" height="50" min="8" direction="Horizontal" default="9.2" variable="expectant-threshold"></slider>
-    <monitor x="5" precision="0" y="604" height="60" fontSize="11" width="100" display="minute">ticks</monitor>
-    <monitor x="110" precision="0" y="604" height="60" fontSize="11" width="100" display="mode">mode-label</monitor>
-    <monitor x="215" precision="0" y="604" height="60" fontSize="11" width="100" display="in ED">count patients</monitor>
-    <monitor x="5" precision="0" y="669" height="60" fontSize="11" width="100" display="deaths">deaths</monitor>
-    <monitor x="110" precision="0" y="669" height="60" fontSize="11" width="100" display="died waiting">deaths-waiting</monitor>
-    <monitor x="215" precision="0" y="669" height="60" fontSize="11" width="100" display="preventable">preventable-deaths</monitor>
-    <monitor x="5" precision="0" y="734" height="60" fontSize="11" width="100" display="left unseen">lwbs</monitor>
-    <monitor x="110" precision="2" y="734" height="60" fontSize="11" width="100" display="red/orange late">critical-delay-rate</monitor>
-    <monitor x="215" precision="0" y="734" height="60" fontSize="11" width="100" display="p90 to triage">p90-door-to-triage</monitor>
-    <monitor x="5" precision="2" y="799" height="60" fontSize="11" width="100" display="under-triage">under-triage-rate</monitor>
-    <monitor x="110" precision="0" y="799" height="60" fontSize="11" width="100" display="messages">total-messages</monitor>
-    <monitor x="215" precision="0" y="799" height="60" fontSize="11" width="100" display="MCI at">mci-declared-at</monitor>
+    <switch x="5" y="622" height="40" on="true" variable="retriage?" width="220" display="retriage?"></switch>
+    <slider x="5" step="5" y="667" max="60" width="220" display="retriage-interval" height="50" min="5" direction="Horizontal" default="15.0" variable="retriage-interval" units="min"></slider>
+    <switch x="5" y="745" height="40" on="true" variable="mci-extra-desk?" width="220" display="mci-extra-desk?"></switch>
+    <slider x="5" step="1" y="790" max="60" width="220" display="extra-desk-delay" height="50" min="0" direction="Horizontal" default="15.0" variable="extra-desk-delay" units="min"></slider>
+    <monitor x="5" precision="0" y="850" height="60" fontSize="11" width="100" display="minute">ticks</monitor>
+    <monitor x="110" precision="0" y="850" height="60" fontSize="11" width="100" display="mode">mode-label</monitor>
+    <monitor x="215" precision="0" y="850" height="60" fontSize="11" width="100" display="in ED">count patients</monitor>
+    <monitor x="5" precision="0" y="915" height="60" fontSize="11" width="100" display="deaths">deaths</monitor>
+    <monitor x="110" precision="0" y="915" height="60" fontSize="11" width="100" display="died waiting">deaths-waiting</monitor>
+    <monitor x="215" precision="0" y="915" height="60" fontSize="11" width="100" display="preventable">preventable-deaths</monitor>
+    <monitor x="5" precision="0" y="980" height="60" fontSize="11" width="100" display="left unseen">lwbs</monitor>
+    <monitor x="110" precision="2" y="980" height="60" fontSize="11" width="100" display="red/orange late">critical-delay-rate</monitor>
+    <monitor x="215" precision="0" y="980" height="60" fontSize="11" width="100" display="p90 to triage">p90-door-to-triage</monitor>
+    <monitor x="5" precision="2" y="1045" height="60" fontSize="11" width="100" display="under-triage">under-triage-rate</monitor>
+    <monitor x="110" precision="0" y="1045" height="60" fontSize="11" width="100" display="messages">total-messages</monitor>
+    <monitor x="215" precision="0" y="1045" height="60" fontSize="11" width="100" display="MCI at">mci-declared-at</monitor>
     <note x="885" y="10" backgroundDark="0" fontSize="11" width="215" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Department</note>
-    <slider x="880" step="1" y="33" max="40" width="220" display="general-beds" height="50" min="4" direction="Horizontal" default="24.0" variable="general-beds"></slider>
+    <slider x="880" step="1" y="33" max="40" width="220" display="general-beds" height="50" min="4" direction="Horizontal" default="15.0" variable="general-beds"></slider>
     <slider x="880" step="1" y="88" max="10" width="220" display="resus-beds" height="50" min="0" direction="Horizontal" default="3.0" variable="resus-beds"></slider>
-    <slider x="880" step="1" y="143" max="30" width="220" display="chairs" height="50" min="0" direction="Horizontal" default="12.0" variable="chairs"></slider>
-    <slider x="880" step="1" y="198" max="20" width="220" display="surge-beds" height="50" min="0" direction="Horizontal" default="10.0" variable="surge-beds"></slider>
-    <slider x="880" step="1" y="253" max="15" width="220" display="n-doctors" height="50" min="1" direction="Horizontal" default="4.0" variable="n-doctors"></slider>
-    <slider x="880" step="1" y="308" max="10" width="220" display="oncall-doctors" height="50" min="0" direction="Horizontal" default="3.0" variable="oncall-doctors"></slider>
-    <slider x="880" step="1" y="363" max="100" width="220" display="free-ward-beds" height="50" min="0" direction="Horizontal" default="20.0" variable="free-ward-beds"></slider>
+    <slider x="880" step="1" y="143" max="30" width="220" display="chairs" height="50" min="0" direction="Horizontal" default="5.0" variable="chairs"></slider>
+    <slider x="880" step="1" y="198" max="20" width="220" display="surge-beds" height="50" min="0" direction="Horizontal" default="5.0" variable="surge-beds"></slider>
+    <slider x="880" step="1" y="253" max="15" width="220" display="n-doctors" height="50" min="1" direction="Horizontal" default="2.0" variable="n-doctors"></slider>
+    <slider x="880" step="1" y="308" max="10" width="220" display="oncall-doctors" height="50" min="0" direction="Horizontal" default="2.0" variable="oncall-doctors"></slider>
+    <slider x="880" step="1" y="363" max="100" width="220" display="free-ward-beds" height="50" min="0" direction="Horizontal" default="5.0" variable="free-ward-beds"></slider>
     <switch x="880" y="418" height="40" on="true" variable="ward-boarding?" width="220" display="ward-boarding?"></switch>
     <note x="885" y="468" backgroundDark="0" fontSize="11" width="215" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Incident command</note>
     <slider x="1032" step="1" y="491" max="40" width="220" display="mci-threshold" height="50" min="4" direction="Horizontal" default="12.0" variable="mci-threshold" units="arrivals/30min"></slider>
@@ -243,42 +232,6 @@ end]]></code>
     <button x="1032" y="596" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="108" display="show messages">show-messages</button>
     <button x="1144" y="596" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="108" display="export patients">export-patients</button>
     <button x="1032" y="641" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="220" display="export scenario">export-scenario</button>
-    <plot x="325" autoPlotX="true" yMax="10.0" autoPlotY="true" yAxis="patients" y="385" xMin="0.0" height="222" legend="true" xMax="10.0" yMin="0.0" width="230" xAxis="minutes" display="Queues">
-      <setup></setup>
-      <update></update>
-      <pen interval="1.0" mode="0" display="triage" color="-2674135" legend="true">
-        <setup></setup>
-        <update>plot n-waiting-triage</update>
-      </pen>
-      <pen interval="1.0" mode="0" display="bed" color="-955883" legend="true">
-        <setup></setup>
-        <update>plot n-waiting-bed</update>
-      </pen>
-      <pen interval="1.0" mode="0" display="doctor" color="-13345367" legend="true">
-        <setup></setup>
-        <update>plot n-waiting-doctor</update>
-      </pen>
-      <pen interval="1.0" mode="0" display="boarding" color="-8630108" legend="true">
-        <setup></setup>
-        <update>plot n-boarding</update>
-      </pen>
-    </plot>
-    <plot x="560" autoPlotX="true" yMax="10.0" autoPlotY="true" yAxis="patients" y="385" xMin="0.0" height="222" legend="true" xMax="10.0" yMin="0.0" width="230" xAxis="minutes" display="Outcomes">
-      <setup></setup>
-      <update></update>
-      <pen interval="1.0" mode="0" display="deaths" color="-16777216" legend="true">
-        <setup></setup>
-        <update>plot deaths</update>
-      </pen>
-      <pen interval="1.0" mode="0" display="died waiting" color="-7500403" legend="true">
-        <setup></setup>
-        <update>plot deaths-waiting</update>
-      </pen>
-      <pen interval="1.0" mode="0" display="left unseen" color="-1184463" legend="true">
-        <setup></setup>
-        <update>plot lwbs</update>
-      </pen>
-    </plot>
     <plot x="795" autoPlotX="true" yMax="10.0" autoPlotY="true" yAxis="count" y="516" xMin="0.0" height="274" legend="true" xMax="10.0" yMin="0.0" width="230" xAxis="minutes" display="Resources">
       <setup></setup>
       <update></update>
@@ -300,6 +253,45 @@ end]]></code>
       </pen>
     </plot>
     <output x="325" y="795" height="130" fontSize="12" width="865"></output>
+    <plot x="560" autoPlotX="true" yMax="10.0" autoPlotY="true" yAxis="patients" y="516" xMin="0.0" height="222" legend="true" xMax="10.0" yMin="0.0" width="230" xAxis="minutes" display="Outcomes">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="deaths" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot deaths</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="died waiting" color="-7500403" legend="true">
+        <setup></setup>
+        <update>plot deaths-waiting</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="left unseen" color="-1184463" legend="true">
+        <setup></setup>
+        <update>plot lwbs</update>
+      </pen>
+    </plot>
+    <plot x="323" autoPlotX="true" yMax="10.0" autoPlotY="true" yAxis="patients" y="517" xMin="0.0" height="222" legend="true" xMax="10.0" yMin="0.0" width="230" xAxis="minutes" display="Queues">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="triage" color="-2674135" legend="true">
+        <setup></setup>
+        <update>plot n-waiting-triage</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="bed" color="-955883" legend="true">
+        <setup></setup>
+        <update>plot n-waiting-bed</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="doctor" color="-13345367" legend="true">
+        <setup></setup>
+        <update>plot n-waiting-doctor</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="boarding" color="-8630108" legend="true">
+        <setup></setup>
+        <update>plot n-boarding</update>
+      </pen>
+    </plot>
+    <note x="8" y="599" backgroundDark="0" fontSize="11" width="217" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Re-triage</note>
+    <note x="8" y="722" backgroundDark="0" fontSize="11" width="217" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Extra MCI desk</note>
+    <note x="8" y="355" backgroundDark="0" fontSize="11" width="217" markdown="false" height="18" textColorDark="-1" textColorLight="-16777216" backgroundLight="0">Triage</note>
   </widgets>
   <info><![CDATA[## WHAT IS IT?
 
@@ -457,6 +449,10 @@ MAS course team project, University of Twente: Kralev, Alagawadi, Tsompanoglou, 
           <value value="false"></value>
           <value value="true"></value>
         </enumeratedValueSet>
+        <enumeratedValueSet variable="co-triage-mode">
+          <value value="&quot;parallel&quot;"></value>
+          <value value="&quot;paired&quot;"></value>
+        </enumeratedValueSet>
         <steppedValueSet variable="sim-seed" first="1" step="1" last="30"></steppedValueSet>
       </constants>
     </experiment>
@@ -485,6 +481,10 @@ MAS course team project, University of Twente: Kralev, Alagawadi, Tsompanoglou, 
         <enumeratedValueSet variable="co-triage?">
           <value value="false"></value>
           <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="co-triage-mode">
+          <value value="&quot;parallel&quot;"></value>
+          <value value="&quot;paired&quot;"></value>
         </enumeratedValueSet>
         <steppedValueSet variable="sim-seed" first="1" step="1" last="5"></steppedValueSet>
       </constants>
